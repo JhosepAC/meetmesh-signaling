@@ -16,7 +16,7 @@ const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "*", // TODO: Update to frontend URL in production
+    origin: process.env.CLIENT_ORIGIN || "*",
     methods: ["GET", "POST"]
   }
 });
