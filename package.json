@@ -1,12 +1,13 @@
 {
   "name": "meetmesh-signaling",
   "version": "1.0.0",
-  "description": "Servidor de señalización para plataforma P2P",
+  "description": "Servidor de se\u00f1alizaci\u00f3n para plataforma P2P",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",
