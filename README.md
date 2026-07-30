@@ -1,6 +1,13 @@
+[![Project Status](https://img.shields.io/badge/Status-In%20Development-yellow?style=for-the-badge)](#)
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](#)
+[![Type](https://img.shields.io/badge/Type-Personal%20Project-blue?style=for-the-badge)](#)
+
 # MeetMesh — Signaling Server
 
 WebRTC signaling server for the MeetMesh P2P video-calling platform. Relays offer/answer/ICE-candidate messages, maintains authoritative room state in memory, and manages participant lifecycle — without touching any media data.
+
+> [!IMPORTANT]
+> Required repository (frontend): https://github.com/JhosepAC/videocall-app
 
 ## Tech Stack
 
@@ -172,3 +179,10 @@ node index.js
 ```
 
 No database, no build step — just install and run.
+
+## Contact & Socials
+
+[![Portfolio](https://img.shields.io/badge/Portfolio-Check%20it%20out-black?style=for-the-badge&logo=googlechrome&logoColor=white)](https://jhosep-ac.pages.dev)
+[![Instagram](https://img.shields.io/badge/Instagram-Follow%20Me-E4405F?style=for-the-badge&logo=instagram&logoColor=white)](https://instagram.com/jh_slin)
+[![Gmail](https://img.shields.io/badge/Gmail-Contact%20Me-D14836?style=for-the-badge&logo=gmail&logoColor=white)](mailto:jhosepjamil@gmail.com)
+[![WhatsApp](https://img.shields.io/badge/WhatsApp-WRITE%20ME-25D366?style=for-the-badge&logo=whatsapp&logoColor=white)](https://wa.me/51978777386)
