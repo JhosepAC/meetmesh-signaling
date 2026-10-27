@@ -57,6 +57,7 @@ The server is stateless by design — all room state lives in JavaScript `Map` i
 | `join-room` | `{ roomId, participantId, fullName?, username?, avatarUrl?, isVideoMuted?, isAudioMuted?, isHandRaised?, isEnhanced? }` | Join or rejoin a meeting room. First joiner becomes host. |
 | `update-room-state` | `{ patch: { isVideoMuted?, isAudioMuted?, isHandRaised?, isEnhanced?, isScreenSharing? }, mutationId? }` | Update participant media state or toggle screen share. |
 | `send-reaction` | `{ emoji, clientReactionId? }` | Send an emoji reaction (4s TTL). Idempotent via `clientReactionId`. |
+| `send-message` | `{ body, clientMessageId }` | Send a plain-text message (4,000 characters), with an idempotent acknowledgement. |
 | `request-room-state` | — | Request a fresh room snapshot (ack callback). |
 | `webrtc-offer` | `{ offer, toSocketId }` | Relay a WebRTC offer to a specific peer. |
 | `webrtc-answer` | `{ answer, toSocketId }` | Relay a WebRTC answer to a specific peer. |
@@ -73,6 +74,7 @@ The server is stateless by design — all room state lives in JavaScript `Map` i
 | `participant-reconnected` | `ParticipantInfo` | A participant reconnected after a temporary disconnect. |
 | `participant-left` | `{ participantId, socketId }` | A participant was fully removed. |
 | `reaction` | `Reaction` | An emoji reaction was sent by someone in the room. |
+| `chat-message` | `{ id, sequence, participantId, fullName, body, clientMessageId, createdAt }` | Ordered message delivered to all participants, including the sender. |
 | `room-ended` | — | The host ended the room. |
 | `webrtc-offer` | `{ offer, fromSocketId }` | Incoming WebRTC offer from another peer. |
 | `webrtc-answer` | `{ answer, fromSocketId }` | Incoming WebRTC answer from another peer. |
@@ -89,6 +91,7 @@ All state is held in memory:
 | `activeScreenShareIds` | `string[]` | Participant IDs currently sharing their screen. |
 | `participants` | `Participant[]` | Sorted by join time. |
 | `reactions` | `Reaction[]` | Active reactions (expired ones are pruned). |
+| `messages` | `Message[]` | Newest 100 messages, restored on join/reconnect; retained only for the active in-memory room. |
 
 ### Participant object
 
@@ -116,8 +119,8 @@ All state is held in memory:
 When a socket disconnects (network drop, tab close), the server:
 
 1. Immediately marks `participant.isConnected = false` and publishes the updated state
-2. Starts a **10-second grace timer**
-3. If the participant rejoins within 10 seconds (same `participantId`), the timer is cleared and `isConnected` is set back to `true`
+2. Starts a **30-second grace timer**
+3. If the participant rejoins within 30 seconds (same `participantId`), the timer is cleared and `isConnected` is set back to `true`
 4. If the timer expires, the participant is fully removed, and `participant-left` is broadcast
 
 This prevents brief network interruptions from removing participants from the room.
