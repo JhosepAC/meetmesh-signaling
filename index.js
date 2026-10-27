@@ -23,9 +23,10 @@ const io = new Server(httpServer, {
   connectionStateRecovery: {
     // Allows Socket.IO to replay missed packets during short network changes;
     // the authoritative snapshot on join remains the final reconciliation.
-    maxDisconnectionDuration: 10_000,
+    maxDisconnectionDuration: 30_000,
     skipMiddlewares: true,
   },
+  maxHttpBufferSize: 64 * 1024,
   cors: {
     origin: (origin, callback) => {
       if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
