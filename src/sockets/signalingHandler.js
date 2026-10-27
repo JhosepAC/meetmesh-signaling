@@ -3,11 +3,12 @@
  * meeting state; MediaStreams remain peer-to-peer WebRTC resources.
  */
 const rooms = new Map()
-const DISCONNECT_GRACE_MS = 10_000
+const DISCONNECT_GRACE_MS = 30_000
 const REACTION_TTL_MS = 4_000
 
 const bool = (value, fallback = false) => typeof value === 'boolean' ? value : fallback
 const text = (value, max = 120) => typeof value === 'string' ? value.trim().slice(0, max) : ''
+const reply = (ack, result) => { if (typeof ack === 'function') ack(result) }
 
 function createRoom() {
   return {
@@ -18,6 +19,8 @@ function createRoom() {
     reactions: new Map(),
     reactionClientIds: new Map(),
     reactionSequence: 0,
+    messages: [],
+    messageSequence: 0,
     disconnectTimers: new Map(),
   }
 }
@@ -55,11 +58,12 @@ function snapshot(room) {
   return {
     version: room.version,
     hostParticipantId: room.hostParticipantId,
-    activeScreenShareIds: room.activeScreenShareIds,
+    activeScreenShareIds: [...room.activeScreenShareIds],
     participants: [...room.participants.values()]
       .sort((a, b) => a.joinedAt - b.joinedAt || a.participantId.localeCompare(b.participantId))
       .map(participant => publicParticipant(participant, room)),
     reactions: [...room.reactions.values()].sort((a, b) => a.sequence - b.sequence),
+    messages: [...room.messages],
   }
 }
 
@@ -73,13 +77,16 @@ function nextVersion(room) {
 
 function chooseNewHost(room) {
   const next = [...room.participants.values()]
-    .sort((a, b) => a.joinedAt - b.joinedAt || a.participantId.localeCompare(b.participantId))[0]
+    .sort((a, b) => Number(b.isConnected) - Number(a.isConnected) || a.joinedAt - b.joinedAt || a.participantId.localeCompare(b.participantId))[0]
   room.hostParticipantId = next?.participantId ?? null
 }
 
 function targetIsInSameRoom(io, socket, targetSocketId) {
   const target = io.sockets.sockets.get(targetSocketId)
-  return Boolean(target && target.data.roomId === socket.data.roomId && target.id !== socket.id)
+  const room = rooms.get(socket.data.roomId)
+  return Boolean(room && room.participants.get(socket.data.participantId)?.socketId === socket.id &&
+    target && target.data.roomId === socket.data.roomId && target.id !== socket.id &&
+    room.participants.get(target.data.participantId)?.socketId === target.id)
 }
 
 function removeParticipant(io, roomId, room, participantId) {
@@ -105,15 +112,16 @@ function removeParticipant(io, roomId, room, participantId) {
 
 export const handleSignaling = (io, socket) => {
   socket.on('join-room', (payload = {}, ack) => {
+    payload ||= {}
     const roomId = text(payload.roomId, 160)
     const participantId = text(payload.participantId || payload.userId, 160)
     if (!roomId || !participantId) {
-      ack?.({ ok: false, error: 'roomId and participantId are required' })
+      reply(ack, { ok: false, error: 'roomId and participantId are required' })
       return
     }
 
     // A socket can belong to one meeting only.  Cleanly remove a previous one.
-    if (socket.data.roomId && socket.data.roomId !== roomId) {
+    if (socket.data.roomId && (socket.data.roomId !== roomId || socket.data.participantId !== participantId)) {
       const oldRoom = rooms.get(socket.data.roomId)
       if (oldRoom) removeParticipant(io, socket.data.roomId, oldRoom, socket.data.participantId)
       socket.leave(socket.data.roomId)
@@ -146,6 +154,10 @@ export const handleSignaling = (io, socket) => {
       joinedAt: existing?.joinedAt ?? Date.now(),
     }
     room.participants.set(participantId, participant)
+    // Rejoining supplies the device's current state, including a presentation
+    // that was stopped while signaling was unavailable.
+    room.activeScreenShareIds = room.activeScreenShareIds.filter(id => id !== participantId)
+    if (payload.isScreenSharing === true) room.activeScreenShareIds.push(participantId)
     if (!room.hostParticipantId) room.hostParticipantId = participantId
 
     socket.join(roomId)
@@ -157,26 +169,26 @@ export const handleSignaling = (io, socket) => {
     // The joiner always gets a complete snapshot before any incremental signal.
     socket.emit('room-state', snapshot(room))
     socket.to(roomId).emit(reconnecting ? 'participant-reconnected' : 'participant-joined', publicParticipant(participant, room))
-    socket.to(roomId).emit('user-connected', publicParticipant(participant, room))
     publish(io, roomId, room)
-    ack?.({ ok: true, state: snapshot(room) })
+    reply(ack, { ok: true, state: snapshot(room) })
   })
 
   socket.on('request-room-state', (ack) => {
     const room = rooms.get(socket.data.roomId)
-    if (!room || !socket.data.participantId) return ack?.({ ok: false })
+    if (!room || !socket.data.participantId) return reply(ack, { ok: false })
     const state = snapshot(room)
     socket.emit('room-state', state)
-    ack?.({ ok: true, state })
+    reply(ack, { ok: true, state })
   })
 
   socket.on('update-room-state', (payload = {}, ack) => {
+    payload ||= {}
     const roomId = socket.data.roomId
     const participantId = socket.data.participantId
     const room = rooms.get(roomId)
     const participant = room?.participants.get(participantId)
     if (!room || !participant || participant.socketId !== socket.id) {
-      ack?.({ ok: false, error: 'not joined' })
+      reply(ack, { ok: false, error: 'not joined' })
       return
     }
 
@@ -204,22 +216,23 @@ export const handleSignaling = (io, socket) => {
       nextVersion(room)
       publish(io, roomId, room)
     }
-    ack?.({ ok: true, mutationId: text(payload.mutationId, 120), state: snapshot(room) })
+    reply(ack, { ok: true, mutationId: text(payload.mutationId, 120), state: snapshot(room) })
   })
 
   socket.on('send-reaction', (payload = {}, ack) => {
+    payload ||= {}
     const roomId = socket.data.roomId
     const room = rooms.get(roomId)
     const participant = room?.participants.get(socket.data.participantId)
     const emoji = text(payload.emoji, 16)
-    if (!room || !participant || !emoji) return ack?.({ ok: false })
+    if (!room || !participant || participant.socketId !== socket.id || !emoji) return reply(ack, { ok: false })
 
     pruneReactions(room)
     const clientReactionId = text(payload.clientReactionId, 120)
     const idempotencyKey = `${participant.participantId}:${clientReactionId}`
     const knownReactionId = clientReactionId && room.reactionClientIds.get(idempotencyKey)
     if (knownReactionId) {
-      ack?.({ ok: true, reaction: room.reactions.get(knownReactionId), duplicate: true })
+      reply(ack, { ok: true, reaction: room.reactions.get(knownReactionId), duplicate: true })
       return
     }
     const sequence = ++room.reactionSequence
@@ -240,32 +253,62 @@ export const handleSignaling = (io, socket) => {
     room.reactions.set(reaction.id, reaction)
     if (clientReactionId) room.reactionClientIds.set(idempotencyKey, reaction.id)
     io.to(roomId).emit('reaction', reaction)
-    ack?.({ ok: true, reaction })
+    reply(ack, { ok: true, reaction })
+  })
+
+  socket.on('send-message', (payload = {}, ack) => {
+    payload ||= {}
+    const roomId = socket.data.roomId
+    const room = rooms.get(roomId)
+    const participant = room?.participants.get(socket.data.participantId)
+    const body = text(payload.body, 4000)
+    const clientMessageId = text(payload.clientMessageId, 120)
+    if (!room || !participant || participant.socketId !== socket.id || !body || !clientMessageId) {
+      return reply(ack, { ok: false, error: 'A joined participant, message and clientMessageId are required' })
+    }
+    const existing = room.messages.find(item => item.participantId === participant.participantId && item.clientMessageId === clientMessageId)
+    if (existing) return reply(ack, { ok: true, message: existing })
+    const message = {
+      id: `${++room.messageSequence}-${participant.participantId}`,
+      sequence: room.messageSequence,
+      participantId: participant.participantId,
+      fullName: participant.fullName || participant.username,
+      body,
+      clientMessageId,
+      createdAt: Date.now(),
+    }
+    room.messages.push(message)
+    if (room.messages.length > 100) room.messages.shift()
+    io.to(roomId).emit('chat-message', message)
+    reply(ack, { ok: true, message })
   })
 
   socket.on('leave-room', () => {
     const { roomId, participantId } = socket.data
     const room = rooms.get(roomId)
-    if (room && participantId) removeParticipant(io, roomId, room, participantId)
+    if (room?.participants.get(participantId)?.socketId === socket.id) removeParticipant(io, roomId, room, participantId)
     socket.leave(roomId)
     socket.data.roomId = null
     socket.data.participantId = null
   })
 
-  socket.on('webrtc-offer', ({ offer, toSocketId } = {}) => {
-    if (targetIsInSameRoom(io, socket, toSocketId) && offer) {
+  socket.on('webrtc-offer', (payload) => {
+    const {offer, toSocketId} = payload || {}
+    if (targetIsInSameRoom(io, socket, toSocketId) && offer?.type === 'offer' && typeof offer.sdp === 'string' && offer.sdp.length <= 60000) {
       io.to(toSocketId).emit('webrtc-offer', { offer, fromSocketId: socket.id })
     }
   })
 
-  socket.on('webrtc-answer', ({ answer, toSocketId } = {}) => {
-    if (targetIsInSameRoom(io, socket, toSocketId) && answer) {
+  socket.on('webrtc-answer', (payload) => {
+    const {answer, toSocketId} = payload || {}
+    if (targetIsInSameRoom(io, socket, toSocketId) && answer?.type === 'answer' && typeof answer.sdp === 'string' && answer.sdp.length <= 60000) {
       io.to(toSocketId).emit('webrtc-answer', { answer, fromSocketId: socket.id })
     }
   })
 
-  socket.on('ice-candidate', ({ candidate, toSocketId } = {}) => {
-    if (targetIsInSameRoom(io, socket, toSocketId) && candidate) {
+  socket.on('ice-candidate', (payload) => {
+    const {candidate, toSocketId} = payload || {}
+    if (targetIsInSameRoom(io, socket, toSocketId) && typeof candidate?.candidate === 'string' && candidate.candidate.length <= 4096) {
       io.to(toSocketId).emit('ice-candidate', { candidate, fromSocketId: socket.id })
     }
   })
@@ -273,12 +316,16 @@ export const handleSignaling = (io, socket) => {
   socket.on('end-room', (ack) => {
     const roomId = socket.data.roomId
     const room = rooms.get(roomId)
-    if (!room || room.hostParticipantId !== socket.data.participantId) {
-      ack?.({ ok: false, error: 'only the host can end the room' })
+    if (!room || room.hostParticipantId !== socket.data.participantId ||
+      room.participants.get(socket.data.participantId)?.socketId !== socket.id) {
+      reply(ack, { ok: false, error: 'only the host can end the room' })
       return
     }
+    // Resolve the host's request before clients close their sockets on room-ended.
+    reply(ack, { ok: true })
     io.to(roomId).emit('room-ended')
     const socketIds = io.sockets.adapter.rooms.get(roomId)
+    for (const timer of room.disconnectTimers.values()) clearTimeout(timer)
     rooms.delete(roomId)
     for (const socketId of socketIds || []) {
       const peer = io.sockets.sockets.get(socketId)
@@ -288,7 +335,6 @@ export const handleSignaling = (io, socket) => {
         peer.disconnect(true)
       }
     }
-    ack?.({ ok: true })
   })
 
   socket.on('disconnect', () => {
